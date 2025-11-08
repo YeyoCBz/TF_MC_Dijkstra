@@ -14,7 +14,20 @@ def initial_environment_variables():
         st.session_state.graph_dict = None
     if 'is_graph_generated' not in st.session_state:
         st.session_state.is_graph_generated = False
+    if 'dijkstra_steps' not in st.session_state:
+        st.session_state.dijkstra_steps = []
 
+def _manual_graph_complete(graph_dict, nodes_count):
+    if not graph_dict:
+        return False
+    end_node = st.session_state.get('end_node')
+    for i in range(nodes_count):
+        node = chr(65 + i)
+        if node == end_node:
+            continue
+        if node not in graph_dict or len(graph_dict[node]) == 0:
+            return False
+    return True
 
 def generate_random_graph(n):
     graph_dict = {}
@@ -36,7 +49,6 @@ def generate_random_graph(n):
             graph_dict[u][v] = weight
 
     return graph_dict
-
 
 def pyvis_configuration():
     return """
@@ -68,7 +80,8 @@ def pyvis_configuration():
         },
         "font": {
           "size": 30,
-          "align": "top"
+          "align": "top",
+          "color": "#FFF"
         },
         "smooth": {
           "enabled": false
@@ -90,7 +103,6 @@ def pyvis_configuration():
       }
     }
     """
-
 
 def show_highlight_paths(highlight_paths, graph_dict, net):
     for u, neighbors in graph_dict.items():
@@ -119,22 +131,21 @@ def show_highlight_paths(highlight_paths, graph_dict, net):
                         break
     return net
 
-
 def create_pyvis_network(graph_dict, highlight_paths=None, start_node=None, end_node=None):
     net = Network(height="1000px", width="100%", bgcolor="#0E1117", font_color="black")
 
     net.set_options(pyvis_configuration())
 
-    G_nx = nx.DiGraph()
+    g_nx = nx.DiGraph()
 
     for node in graph_dict.keys():
-        G_nx.add_node(node)
+        g_nx.add_node(node)
 
     for u, neighbors in graph_dict.items():
         for v, weight in neighbors.items():
-            G_nx.add_edge(u, v, weight=weight)
+            g_nx.add_edge(u, v, weight=weight)
 
-    pos_nx = nx.spring_layout(G_nx, seed=42, k=3, iterations=100)
+    pos_nx = nx.spring_layout(g_nx, seed=42, k=3, iterations=100)
 
     pos = {}
     for node, (x, y) in pos_nx.items():
@@ -187,12 +198,33 @@ def show_min_path(min_distance, all_short_paths, start_node, end_node):
             st.write(f"**Camino {i}:** {path_str} (Longitud: {min_distance})")
 
 
-def steps_details_dijkstra():
-    # Mostrar pasos detallados
-    st.markdown("---")
-    # st.subheader("Pasos Detallados del Algoritmo")
-    # print("Pasos Detallados del Algoritmo en proceso")
-    # Se desarolllará en futuras actualizaciones
+def steps_details_dijkstra(end_node=None):
+    if not st.session_state.get('dijkstra_steps'):
+        return
+    st.subheader("Resumen de pasos (Dijkstra)")
+    for step in st.session_state['dijkstra_steps']:
+        nodo = step['seleccionado']
+        distancia = step['seleccionado_distancia']
+
+        if nodo == end_node and len(step.get('seleccionado_pred_hops', [])) > 1:
+            etiquetas = []
+            for ph in step['seleccionado_pred_hops']:
+                etiquetas.append(f"{nodo} [{distancia}, {ph['desde']}]`({ph['salto']})`")
+            etiquetas_str = ", ".join(etiquetas)
+            st.write(f"Paso {step['iteracion']}: Nodo seleccionado {etiquetas_str}")
+        else:
+            nodo_etiqueta = f"[{step['seleccionado_distancia']}, {step['seleccionado_desde']}]`({step['seleccionado_salto']})`"
+            st.write(f"Paso {step['iteracion']}: Nodo seleccionado {step['seleccionado']} {nodo_etiqueta}")
+
+        if step['actualizaciones']:
+            for upd in step['actualizaciones']:
+                etiqueta = f"[{upd['distancia']}, {upd['desde']}]`({upd['iteracion_salto']})`"
+                if upd.get('ya_etiquetado') or upd.get('no_mejora'):
+                    st.write(f"- Ya etiquetado: {upd['nodo']} {etiqueta} (actual: {upd['distancia_actual']})")
+                elif upd.get('empate'):
+                    st.write(f"- Empate: {upd['nodo']} {etiqueta}")
+                else:
+                    st.write(f"- {upd['nodo']} {etiqueta}")
 
 
 def show_graph(all_short_paths, is_dijkstra_executed, start_node, end_node):
@@ -231,6 +263,7 @@ def set_start_end_nodes(creation_type, nodes_count):
         st.warning(f"Los nodos origen y destino son iguales")
 
     if creation_type == "Manual":
+        is_edge_already_created = False
         col1, col2, col3, col4, col5 = st.columns([2, 2, 2, 1, 3])
 
         with col1:
@@ -247,7 +280,13 @@ def set_start_end_nodes(creation_type, nodes_count):
             st.subheader("")
             st.write("")
             if st.button("", icon=":material/add:"):
-                st.session_state.graph_dict[u][v] = weight
+                if v in st.session_state.graph_dict.get(u, {}):
+                    st.session_state.graph_dict[u][v] = weight
+                else:
+                    if u in st.session_state.graph_dict.get(v, {}):
+                        is_edge_already_created = True
+                    else:
+                        st.session_state.graph_dict[u][v] = weight
         with col5:
             st.subheader("Carga tu grafo")
             uploaded_files = st.file_uploader("Subir archivo", type="json")
@@ -257,14 +296,19 @@ def set_start_end_nodes(creation_type, nodes_count):
                 if nodes_count == len(json_graph):
                     st.session_state.graph_dict = json_graph
                 else:
-                    st.warning(f"El json debe tener {nodes_count} nodos")
+                    st.warning(f"El grafo cargado tiene {len(json_graph)} nodos.")
+
+        if is_edge_already_created:
+            col_warning, _ = st.columns([2, 1])
+            with col_warning:
+                st.warning(f"No se puede cambiar la dirección de la arista {v} -> {u}")
 
     return start_node, end_node
 
 
 def btn_generate_graph_execute_algorithm(creation_type, nodes_count):
     is_dijkstra_executed = False
-    btn1, btn2, btn3 = st.columns([1, 1, 1])
+    btn1, btn2, btn3, btn4 = st.columns([1, 1, 1, 1])
 
     if btn1.button("Crear Grafo", width="stretch", type="primary", icon=":material/network_node:"):
         st.session_state.is_graph_generated = True
@@ -275,7 +319,10 @@ def btn_generate_graph_execute_algorithm(creation_type, nodes_count):
 
     if btn2.button("Ejecutar Dijkstra", width="stretch", icon=":material/play_circle:",
                    disabled=(not st.session_state.is_graph_generated)):
-        is_dijkstra_executed = True
+        if creation_type == "Manual" and not _manual_graph_complete(st.session_state.graph_dict, nodes_count):
+            st.warning("Completa las conexiones antes de ejecutar Dijkstra")
+        else:
+            is_dijkstra_executed = True
 
     if st.session_state.is_graph_generated and st.session_state.graph_dict:
         graph_json = json.dumps(st.session_state.graph_dict, indent=2)
@@ -287,6 +334,11 @@ def btn_generate_graph_execute_algorithm(creation_type, nodes_count):
             icon=":material/download:",
             disabled=(not st.session_state.is_graph_generated)
         )
+
+    if btn4.button("Reiniciar", width="stretch", icon=":material/restart_alt:"):
+        st.session_state.graph_dict = None
+        st.session_state.is_graph_generated = False
+        st.session_state.dijkstra_steps = []
 
     return is_dijkstra_executed
 
@@ -328,12 +380,17 @@ def main():
             # Encontrar camino mas corto
             dijkstra = ad.AlgorithmDijkstra(st.session_state.graph_dict)
             all_short_paths, min_distance = dijkstra.find_short_path(start_node, end_node)
-
-            # Ruta del camino corto y detalles para encontar el camino
             show_min_path(min_distance, all_short_paths, start_node, end_node)
-            steps_details_dijkstra()
 
-        show_graph(all_short_paths, is_dijkstra_executed, start_node, end_node)
+            steps, graph = st.columns({1, 3})
+            with steps:
+                st.session_state.dijkstra_steps = dijkstra.steps
+                steps_details_dijkstra(end_node)
+            with graph:
+                show_graph(all_short_paths, is_dijkstra_executed, start_node, end_node)
+
+        else:
+            show_graph(all_short_paths, is_dijkstra_executed, start_node, end_node)
 
 
 if __name__ == "__main__":
